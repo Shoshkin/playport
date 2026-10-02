@@ -324,6 +324,16 @@ docs/       Logo and screenshots
 ./gradlew :server:run --args="--help"
 ```
 
+To compile without a local JDK or Node.js, build in Docker. The server still runs natively on the
+Mac, because it needs Bluetooth, mDNS and the LAN:
+
+```sh
+scripts/docker-build.sh                                   # writes web/dist and server/build/install/server
+server/build/install/server/bin/server --wireless ...     # run from the repository root (needs Java 21+)
+```
+
+`bt-bridge` links IOBluetooth, so build it on the host with `macos/bt-bridge/build.sh`.
+
 The `protocol` module is a faithful port of DiPlay's `shared` sources with Android dependencies
 replaced by small JVM shims (`platform/Log`, `network/TcpLiveness`, `transport/IphoneUsbException`),
 so future upstream fixes stay easy to merge. `MfiIdentityTest` validates the local identity against

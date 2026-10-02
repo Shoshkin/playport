@@ -1,0 +1,13 @@
+.git
+.gradle
+**/build
+web/node_modules
+web/dist
+identity
+state
+docs
+macos
+*.iml
+.idea
+.vscode
+.DS_Store
