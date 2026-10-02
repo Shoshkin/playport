@@ -8,6 +8,8 @@ interface ActivePointer {
   x: number;
   y: number;
   down: boolean;
+  /** Whether the phone has seen this contact's current down/up state. */
+  sent: boolean;
 }
 
 const emptyKnob = (overrides: Partial<KnobState> = {}): KnobState => ({
@@ -53,6 +55,8 @@ export class InputController {
 
   private readonly onPointerDown = (event: PointerEvent): void => {
     event.preventDefault();
+    // Same pointer pressed again before its release went out: send that release first.
+    if (this.pointers.get(event.pointerId)?.down === false) this.flush();
     if (this.pointers.size >= MAX_CONTACTS) return;
     this.surface.focus({ preventScroll: true });
     this.surface.setPointerCapture(event.pointerId);
@@ -61,13 +65,14 @@ export class InputController {
       x: this.normalizeX(event.clientX),
       y: this.normalizeY(event.clientY),
       down: true,
+      sent: false,
     });
     this.scheduleFlush();
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
     const pointer = this.pointers.get(event.pointerId);
-    if (!pointer) return;
+    if (!pointer || !pointer.down) return;
     event.preventDefault();
     pointer.x = this.normalizeX(event.clientX);
     pointer.y = this.normalizeY(event.clientY);
@@ -76,9 +81,15 @@ export class InputController {
 
   private readonly onPointerUp = (event: PointerEvent): void => {
     const pointer = this.pointers.get(event.pointerId);
-    if (!pointer) return;
+    if (!pointer || !pointer.down) return;
     event.preventDefault();
-    this.pointers.delete(event.pointerId);
+    // A tap shorter than one animation frame would otherwise coalesce into a lone release and the
+    // phone would never see the press: deliver the press first.
+    if (!pointer.sent) this.flush();
+    // Lift off where the finger was. Dropping the contact would report the release at (0, 0), which
+    // iOS treats as dragging off the control and cancels the tap.
+    pointer.down = false;
+    pointer.sent = false;
     this.scheduleFlush();
   };
 
@@ -150,14 +161,18 @@ export class InputController {
     if (this.pendingFlush !== 0) return;
     this.pendingFlush = window.requestAnimationFrame(() => {
       this.pendingFlush = 0;
-      const contacts: TouchContact[] = Array.from(this.pointers.values()).map((pointer) => ({
-        id: pointer.slot,
-        x: pointer.x,
-        y: pointer.y,
-        down: pointer.down,
-      }));
-      this.send({ type: 'touch', contacts });
+      this.flush();
     });
+  }
+
+  private flush(): void {
+    const contacts: TouchContact[] = [];
+    for (const [pointerId, pointer] of this.pointers) {
+      contacts.push({ id: pointer.slot, x: pointer.x, y: pointer.y, down: pointer.down });
+      pointer.sent = true;
+      if (!pointer.down) this.pointers.delete(pointerId);
+    }
+    this.send({ type: 'touch', contacts });
   }
 
   private normalizeX(clientX: number): number {
