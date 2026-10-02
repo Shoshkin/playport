@@ -12,6 +12,7 @@
 }
 
 * { box-sizing: border-box; }
+html, body { overscroll-behavior-x: none; }
 body { margin: 0; background: var(--bg); color: var(--text); }
 button, input, select { font: inherit; }
 button { cursor: pointer; color: inherit; border: 0; background: none; -webkit-tap-highlight-color: transparent; }

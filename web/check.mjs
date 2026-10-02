@@ -8,6 +8,12 @@ const { outputText } = ts.transpileModule(source, { compilerOptions: { target: t
 const { InputController } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`);
 const listeners = new Map();
 const frames = [];
+const timers = new Map();
+let nextTimer = 1;
+const runTimers = (maxDelay = Infinity) => {
+  for (let due; (due = [...timers].find(([, t]) => t.delay <= maxDelay));) { timers.delete(due[0]); due[1].handler(); }
+};
+const runSwipeSteps = () => runTimers(100);
 const messages = [];
 let modalOpen = false;
 let rect = { left: 100, top: 50, width: 400, height: 225 };
@@ -21,6 +27,8 @@ globalThis.window = {
   addEventListener: (name, handler) => listeners.set(name, handler),
   removeEventListener: (name) => listeners.delete(name),
   requestAnimationFrame: (handler) => { frames.push(handler); return frames.length; },
+  setTimeout: (handler, delay = 0) => { timers.set(nextTimer, { handler, delay }); return nextTimer++; },
+  clearTimeout: (id) => timers.delete(id),
 };
 const surface = Object.assign(new Element(), {
   inert: false, style: {}, focus() {}, setPointerCapture() {},
@@ -79,6 +87,52 @@ listeners.get('pointerup')(pointer(4, 0, 0));
 flush();
 assert.deepEqual(messages, [{ type: 'touch', contacts: [{ id: 0, x: .5, y: .5, down: true }] }, { type: 'touch', contacts: [{ id: 0, x: .5, y: .5, down: false }] }], 'A tap inside one frame still presses before releasing');
 messages.length = 0;
+
+rect = { left: 100, top: 50, width: 400, height: 225 };
+let prevented = 0;
+let clock = 0;
+const wheel = (deltaX, deltaY = 0) => listeners.get('wheel')({ deltaX, deltaY, deltaMode: 0, timeStamp: clock += 16, clientX: 300, clientY: 162.5, ctrlKey: false, preventDefault() { prevented += 1; } });
+wheel(0, 30);
+assert.equal(prevented, 1, 'Even a vertical first event is claimed so Chrome cannot latch the gesture');
+assert.equal(messages.length, 0, 'Vertical scrolling does not swipe');
+runTimers();
+wheel(25);
+assert.equal(messages.length, 0, 'A small nudge does not swipe');
+wheel(25);
+wheel(80);
+assert.equal(prevented, 4, 'Horizontal swipes never reach browser back/forward navigation');
+const swipe = messages.splice(0).map((m) => m.contacts[0]);
+assert.deepEqual(swipe[0], { id: 0, x: .7, y: .5, down: true });
+wheel(-80);
+assert.equal(messages.length, 0, 'One trackpad gesture (and its inertia) pages only once');
+runTimers();
+const rest = messages.splice(0).map((m) => m.contacts[0]);
+assert.equal(rest.length, 6);
+assert.ok(Math.abs(rest.at(-1).x - .3) < 1e-9 && rest.at(-1).down === false, 'Swiping fingers left drags CarPlay left and lifts off');
+wheel(-60);
+assert.deepEqual(messages.pop().contacts, [{ id: 0, x: .3, y: .5, down: true }], 'The next gesture swipes the other way');
+runTimers();
+messages.length = 0;
+// A real gesture: wobbling fingers, a lift-off bump, then decaying inertia; then a second swipe.
+const gesture = [10, 20, 30, 35, 22, 30, 18, 12, 20, 26, 22, 18, 15, 12, 10, 8, 6, 5, 4, 3, 3, 2, 2, 1];
+for (const dx of gesture) wheel(dx);
+assert.equal(messages.filter((m) => m.contacts.some((c) => c.down && c.x === .7)).length, 1, 'Wobble, lift-off, and inertia page once');
+runSwipeSteps();
+messages.length = 0;
+for (const dx of [6, 14, 25, 35]) wheel(dx);
+assert.deepEqual(messages.pop().contacts, [{ id: 0, x: .7, y: .5, down: true }], 'A second swipe during the first one\'s inertia still pages');
+runSwipeSteps();
+messages.length = 0;
+for (const dx of gesture.slice(0, 6)) wheel(dx);
+for (const dx of [-2, 4]) wheel(dx);
+assert.equal(messages.filter((m) => m.contacts.some((c) => c.down && c.x === .3)).length, 0, 'A backward twitch at lift-off is not a reverse swipe');
+for (const dx of gesture.slice(10)) wheel(dx);
+runSwipeSteps();
+messages.length = 0;
+for (const dx of [-3, -10, -30]) wheel(dx);
+assert.equal(messages.filter((m) => m.contacts.some((c) => c.down && c.x === .3)).length, 1, 'Reversing direction mid-inertia swipes back');
+runTimers();
+messages.length = 0;
 controller.detach();
 assert.equal(listeners.size, 0);
-console.log('Viewer input check passed: keyboard isolation, native controls, portrait/landscape coordinates, multi-touch, and release.');
+console.log('Viewer input check passed: keyboard isolation, native controls, portrait/landscape coordinates, multi-touch, release, and trackpad swipes.');

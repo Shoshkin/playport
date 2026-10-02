@@ -243,6 +243,7 @@ opens Siri or a call, the browser asks for microphone permission and sends audio
 | Input | Action |
 |---|---|
 | Touch / mouse drag | CarPlay touch (two contacts supported) |
+| Two-finger trackpad swipe left/right | CarPlay swipe (e.g. flip home-screen pages) |
 | Arrow keys | Rotary knob (up/down/left/right) |
 | Enter | Select |
 | Esc / Backspace | Back |

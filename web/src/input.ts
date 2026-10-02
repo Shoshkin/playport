@@ -2,6 +2,18 @@ import type { ClientMessage, KnobState, TouchContact } from './protocol';
 
 const MAX_CONTACTS = 2;
 const KNOB_FLICK = 127;
+/** Horizontal scroll, in pixels, a two-finger trackpad swipe must cover before it pages CarPlay. */
+const SWIPE_THRESHOLD = 40;
+/** Quiet time that ends a trackpad gesture, including its inertial scroll tail. */
+const SWIPE_IDLE_MS = 250;
+/** No human swipes twice this fast; anything sooner is the same gesture's lift-off and inertia. */
+const SWIPE_MIN_GAP_MS = 250;
+/** Fraction of the screen width the synthesized finger travels. */
+const SWIPE_DISTANCE = 0.4;
+const SWIPE_STEPS = 6;
+const SWIPE_STEP_MS = 16;
+/** Pointer id for the synthesized swipe contact; browsers never assign negative ids. */
+const SWIPE_POINTER_ID = -1;
 
 interface ActivePointer {
   slot: number;
@@ -26,6 +38,21 @@ const emptyKnob = (overrides: Partial<KnobState> = {}): KnobState => ({
 export class InputController {
   private readonly pointers = new Map<number, ActivePointer>();
   private pendingFlush = 0;
+  private swipeAccumX = 0;
+  private swipeAccumY = 0;
+  /** A swipe already fired for the current trackpad gesture; ignore its tail until a new one starts. */
+  private swipeLocked = false;
+  /** Speed profile of the locked gesture, used to spot a new swipe inside its inertia. */
+  private swipeLockSign = 0;
+  private swipeLockTime = 0;
+  private swipePrevSpeed = 0;
+  private swipeTrough = 0;
+  private swipeDecayRun = 0;
+  private swipeRise = 0;
+  private swipeReverseCount = 0;
+  private swipeReverseSum = 0;
+  private swipeIdleTimer = 0;
+  private swipeStepTimer = 0;
 
   constructor(
     private readonly surface: HTMLElement,
@@ -40,6 +67,7 @@ export class InputController {
     surface.addEventListener('pointerup', this.onPointerUp, { passive: false });
     surface.addEventListener('pointercancel', this.onPointerUp, { passive: false });
     surface.addEventListener('pointerleave', this.onPointerUp, { passive: false });
+    surface.addEventListener('wheel', this.onWheel, { passive: false });
     window.addEventListener('keydown', this.onKeyDown);
   }
 
@@ -50,7 +78,10 @@ export class InputController {
     surface.removeEventListener('pointerup', this.onPointerUp);
     surface.removeEventListener('pointercancel', this.onPointerUp);
     surface.removeEventListener('pointerleave', this.onPointerUp);
+    surface.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('keydown', this.onKeyDown);
+    window.clearTimeout(this.swipeIdleTimer);
+    window.clearTimeout(this.swipeStepTimer);
   }
 
   private readonly onPointerDown = (event: PointerEvent): void => {
@@ -92,6 +123,100 @@ export class InputController {
     pointer.sent = false;
     this.scheduleFlush();
   };
+
+  /** Turns a two-finger horizontal trackpad swipe into a one-finger CarPlay swipe at the cursor. */
+  private readonly onWheel = (event: WheelEvent): void => {
+    // Pinch-zoom arrives as ctrl+wheel; leave it to the browser.
+    if (event.ctrlKey) return;
+    // Chrome only lets the first wheel event of a gesture be cancelled, and that event is often tiny or
+    // mostly vertical. Claim every one so the browser never latches the swipe as history back/forward.
+    event.preventDefault();
+    if (this.surface.inert) return;
+    window.clearTimeout(this.swipeIdleTimer);
+    this.swipeIdleTimer = window.setTimeout(() => this.resetSwipe(), SWIPE_IDLE_MS);
+    const scale = event.deltaMode === 0 ? 1 : 16;
+    const deltaX = event.deltaX * scale;
+    const deltaY = event.deltaY * scale;
+    if (this.swipeLocked) {
+      if (!this.startsNewSwipe(deltaX, event.timeStamp)) return;
+      this.resetSwipe();
+    }
+    this.swipeAccumX += deltaX;
+    this.swipeAccumY += deltaY;
+    if (Math.abs(this.swipeAccumX) < SWIPE_THRESHOLD || Math.abs(this.swipeAccumX) <= Math.abs(this.swipeAccumY) || this.pointers.size > 0) return;
+    this.swipeLocked = true;
+    this.swipeLockSign = Math.sign(this.swipeAccumX);
+    this.swipeLockTime = event.timeStamp;
+    this.swipePrevSpeed = Math.abs(deltaX);
+    this.swipeTrough = this.swipePrevSpeed;
+    this.swipeDecayRun = 0;
+    this.swipeRise = 0;
+    this.swipeReverseCount = 0;
+    this.swipeReverseSum = 0;
+    // Scrolling content right (positive delta) means dragging it left.
+    const direction = this.swipeAccumX > 0 ? -1 : 1;
+    const half = SWIPE_DISTANCE / 2;
+    const center = Math.min(1 - half, Math.max(half, this.normalizeX(event.clientX)));
+    this.synthesizeSwipe(center - direction * half, center + direction * half, this.normalizeY(event.clientY));
+  };
+
+  /**
+   * macOS keeps streaming inertial wheel events for up to a second after the fingers lift, with no
+   * phase information exposed to the page, and finger speed wobbles while the fingers are still down.
+   * Inertia decays smoothly in the original direction, so only a clear new pattern counts as another
+   * swipe: a sustained reversal, or a steady decay followed by two accelerating events.
+   */
+  private startsNewSwipe(deltaX: number, time: number): boolean {
+    const speed = Math.abs(deltaX);
+    if (speed === 0) return false;
+    if (Math.sign(deltaX) !== this.swipeLockSign) {
+      this.swipeReverseCount += 1;
+      this.swipeReverseSum += speed;
+      this.swipeDecayRun = 0;
+      this.swipeRise = 0;
+      return this.swipeReverseCount >= 2 && this.swipeReverseSum >= 12 && time - this.swipeLockTime >= SWIPE_MIN_GAP_MS;
+    }
+    this.swipeReverseCount = 0;
+    this.swipeReverseSum = 0;
+    if (speed <= this.swipePrevSpeed + 1) {
+      this.swipeTrough = this.swipeDecayRun > 0 ? Math.min(this.swipeTrough, speed) : speed;
+      this.swipeDecayRun += 1;
+      this.swipeRise = 0;
+    } else if (this.swipeDecayRun >= 4) {
+      this.swipeRise += 1;
+    } else {
+      // Finger speed wobble, not a decay-then-surge: start watching for a decay again.
+      this.swipeDecayRun = 0;
+      this.swipeRise = 0;
+    }
+    this.swipePrevSpeed = speed;
+    return this.swipeRise >= 2 && speed > this.swipeTrough * 2 + 6 && time - this.swipeLockTime >= SWIPE_MIN_GAP_MS;
+  }
+
+  private resetSwipe(): void {
+    this.swipeAccumX = 0;
+    this.swipeAccumY = 0;
+    this.swipeLocked = false;
+  }
+
+  private synthesizeSwipe(fromX: number, toX: number, y: number): void {
+    const contact: ActivePointer = { slot: this.nextSlot(), x: fromX, y, down: true, sent: false };
+    this.pointers.set(SWIPE_POINTER_ID, contact);
+    this.flush();
+    let step = 0;
+    const advance = () => {
+      step += 1;
+      contact.x = fromX + ((toX - fromX) * step) / SWIPE_STEPS;
+      if (step >= SWIPE_STEPS) {
+        contact.down = false;
+        this.swipeStepTimer = 0;
+      } else {
+        this.swipeStepTimer = window.setTimeout(advance, SWIPE_STEP_MS);
+      }
+      this.flush();
+    };
+    this.swipeStepTimer = window.setTimeout(advance, SWIPE_STEP_MS);
+  }
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (this.surface.inert || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
