@@ -65,6 +65,7 @@ class WirelessBootstrap(private val server: CarPlayServer) : Closeable {
                 return
             }
             val hostBluetoothMac = BluetoothBridge.localAddress(bridgePath) ?: server.deviceId
+            server.hostBluetoothAddress = hostBluetoothMac
             log.info("wireless bootstrap: iPhone={} hostBt={} wifi={} ch={}", deviceAddress, hostBluetoothMac, wifi.ssid, wifi.channel)
 
             val stream = BluetoothBridge.open(bridgePath, deviceAddress).also { bridgeProcess = it }

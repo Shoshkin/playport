@@ -9,7 +9,7 @@ data class ServerConfig(
     val deviceName: String = "PlayPort",
     val model: String = "playport",
     val manufacturer: String = "playport",
-    val sourceVersion: String = "366.0",
+    val sourceVersion: String = "950.7.1",
     val airPlayPort: Int = 7000,
     val httpPort: Int = 8080,
     val displayWidth: Int = 1280,

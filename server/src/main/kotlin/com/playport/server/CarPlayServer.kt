@@ -54,6 +54,9 @@ class CarPlayServer(val config: ServerConfig, private val configStore: ConfigSto
     private val pairings = loadPairings()
     val mfi: MfiAuthenticator by lazy { MfiIdentity.load(config) }
 
+    /** The Mac's Bluetooth address, once the wireless bootstrap has read it from bt-bridge. */
+    @Volatile var hostBluetoothAddress: String? = null
+
     @Volatile private var activeSession: AirPlaySession? = null
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var advertiser: ServiceAdvertiser? = null
@@ -65,7 +68,8 @@ class CarPlayServer(val config: ServerConfig, private val configStore: ConfigSto
         get() = AirPlayConfig(
             deviceName = config.deviceName,
             deviceId = deviceId,
-            btMac = deviceId,
+            // Must match the Bluetooth address given over iAP2, or iOS doesn't create a CarPlay audio route.
+            btMac = hostBluetoothAddress ?: deviceId,
             sourceVersion = config.sourceVersion,
             main = com.shilapi.xcertplay.airplay.CarPlayUiScale.apply(
                 AirPlayDisplayConfig(
@@ -79,7 +83,7 @@ class CarPlayServer(val config: ServerConfig, private val configStore: ConfigSto
             port = config.airPlayPort,
             entertainmentSampleRate = 48_000,
             hevc = display.hevc,
-            microphone = false,
+            microphone = true,
             manufacturer = config.manufacturer,
             model = config.model,
             oemLabel = config.deviceName,

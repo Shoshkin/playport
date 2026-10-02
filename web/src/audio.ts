@@ -10,8 +10,16 @@ interface StreamState {
   gain: GainNode;
 }
 
-const MIN_LATENCY_SECONDS = 0.12;
-const MAX_LATENCY_SECONDS = 0.35;
+/**
+ * Wireless CarPlay sends audio in bursts with ~0.45 s gaps, so media needs a deep buffer to play
+ * through them; Siri, calls and navigation prompts favour latency.
+ */
+function targetLatencySeconds(name: string): number {
+  return name === 'media' ? 0.6 : 0.25;
+}
+
+/** Beyond this much scheduled audio the stream is badly behind; new audio is dropped. */
+const MAX_BUFFERED_SECONDS = 2;
 
 /** Decodes and plays CarPlay audio streams (AAC-LC, Opus, LPCM) via Web Audio. */
 export class AudioEngine {
@@ -185,8 +193,12 @@ export class AudioEngine {
 
   private schedule(state: StreamState, buffer: AudioBuffer): void {
     const now = this.context.currentTime;
-    if (state.nextPlayTime < now + MIN_LATENCY_SECONDS || state.nextPlayTime > now + MAX_LATENCY_SECONDS) {
-      state.nextPlayTime = now + MIN_LATENCY_SECONDS;
+    if (state.nextPlayTime <= now) {
+      // First packet or underrun: leave room to buffer the next burst before playback resumes.
+      state.nextPlayTime = now + targetLatencySeconds(state.name);
+    } else if (state.nextPlayTime > now + MAX_BUFFERED_SECONDS) {
+      // Never reschedule over audio already queued; dropping is cleaner than overlapping.
+      return;
     }
     const source = this.context.createBufferSource();
     source.buffer = buffer;
